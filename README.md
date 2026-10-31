@@ -94,51 +94,44 @@ Ranking, comisiones por tramos, reparto automático por %, horarios, permisos po
 ## 🗺️ Cómo funciona
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#16224a","primaryTextColor":"#1b2340","primaryBorderColor":"#4f7cf0","lineColor":"#7f93c9","fontFamily":"Segoe UI, Helvetica, Arial, sans-serif","fontSize":"17px","edgeLabelBackground":"#e8edfb","textColor":"#1b2340"}}}%%
 flowchart LR
-    subgraph Fuentes["📥 De dónde llegan los leads"]
-        L["🌐 Landings"]
-        G["🟢 GoHighLevel"]
-        C["📄 CSV"]
-    end
-    subgraph App["🖥️ La app · Vercel"]
-        N["Next.js<br/>panel + API"]
-    end
-    subgraph Datos["🗄️ Supabase"]
-        DB[("Base de datos<br/>con RLS")]
-        AU["🔐 Login"]
-        ST["📁 Archivos"]
-    end
-    subgraph Extras["🔌 Opcionales"]
-        R["✉️ Resend<br/>emails"]
-        AI["🤖 Claude + Deepgram<br/>análisis de llamadas"]
-        F["🎥 Fathom<br/>grabaciones"]
-    end
-    L -- formulario --> N
-    G -- "webhooks + API cada minuto" --> N
-    C -- subida --> N
-    N <--> DB
-    N <--> AU
-    N <--> ST
-    N --> R
-    N --> AI
-    F --> N
-    U["👥 Tu equipo<br/>ordenador y móvil"] <--> N
+    F["📥 <b>Leads</b><br/>Landings · GHL · CSV"]:::fuente
+    A["🖥️ <b>Tu app</b><br/>Next.js en Vercel"]:::app
+    S[("🗄️ <b>Supabase</b><br/>datos · login · archivos")]:::datos
+    E["🔌 <b>Extras</b><br/>Resend · Claude · Fathom"]:::extra
+    T["👥 <b>Tu equipo</b><br/>ordenador y móvil"]:::equipo
+    F -- "webhooks · API · subida" --> A
+    T <--> A
+    A <--> S
+    A -. opcional .-> E
+    classDef fuente fill:#1f6f5c,stroke:#3ECF8E,color:#fff
+    classDef app fill:#2f55d4,stroke:#9db6ff,color:#fff
+    classDef datos fill:#16224a,stroke:#3ECF8E,color:#fff
+    classDef extra fill:#3a2a55,stroke:#a98bff,color:#fff
+    classDef equipo fill:#7b1a22,stroke:#f08a93,color:#fff
 ```
 
 ## 🔄 El recorrido de un lead
 
 ```mermaid
-flowchart LR
-    A["📥 Entra el lead<br/>landing · GHL · CSV"] --> B["🎯 Se reparte<br/>a un caller por %"]
-    B --> C["📞 El caller llama<br/>guion + WhatsApp"]
-    C -->|contesta| D["🔗 Le manda<br/>el link de agenda"]
-    C -->|no contesta| C2["⏰ Llamar luego"]
-    C2 --> C
-    D --> E["📅 Reserva una cita<br/>con un closer"]
-    E --> F{"🤝 Llamada<br/>del closer"}
-    F -->|compra| G["💰 Venta<br/>pago único · cuotas · mensual"]
-    F -->|no compra| H["🔁 Seguimiento<br/>o perdido"]
-    G --> I["🏆 Comisiones, ranking<br/>y finanzas al día"]
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#16224a","primaryTextColor":"#1b2340","primaryBorderColor":"#4f7cf0","lineColor":"#7f93c9","fontFamily":"Segoe UI, Helvetica, Arial, sans-serif","fontSize":"17px","edgeLabelBackground":"#e8edfb","textColor":"#1b2340"}}}%%
+flowchart TD
+    A["📥 <b>Entra el lead</b><br/>landing · GHL · CSV"]:::paso --> B["🎯 <b>Se reparte</b> a un caller<br/>según su %"]:::paso
+    B --> C["📞 <b>El caller llama</b><br/>con su guion y WhatsApp"]:::caller
+    C -- contesta --> D["🔗 Le manda el <b>link de agenda</b>"]:::caller
+    C -- no contesta --> C2["⏰ Llamar luego"]:::espera
+    C2 -.-> C
+    D --> E["📅 <b>Reserva una cita</b><br/>con un closer"]:::closer
+    E --> F{"🤝 Llamada<br/>del closer"}:::closer
+    F -- compra --> G["💰 <b>Venta</b><br/>único · cuotas · mensual"]:::venta
+    F -- no compra --> H["🔁 Seguimiento o perdido"]:::espera
+    G --> I["🏆 Comisiones, ranking<br/>y finanzas al día"]:::venta
+    classDef paso fill:#16224a,stroke:#4f7cf0,color:#fff
+    classDef caller fill:#2f55d4,stroke:#9db6ff,color:#fff
+    classDef closer fill:#3a2a55,stroke:#a98bff,color:#fff
+    classDef venta fill:#1f6f5c,stroke:#3ECF8E,color:#fff
+    classDef espera fill:#3b3f4f,stroke:#8b93a7,color:#fff
 ```
 
 ## 👥 Quién ve qué
@@ -159,19 +152,21 @@ Cada sección se puede abrir o cerrar por rol y por persona (Administración →
 La forma fácil: **hablando con Claude Code**. El repo trae un [`CLAUDE.md`](CLAUDE.md) que convierte a Claude en tu instalador: ejecuta los comandos, edita los archivos y abre las webs por ti con el navegador (MCP de Playwright). **Tus claves nunca pasan por el chat**: Claude te abre la página y tú las pegas.
 
 ```mermaid
+%%{init: {"theme":"base","themeVariables":{"primaryColor":"#2f55d4","primaryTextColor":"#ffffff","primaryBorderColor":"#9db6ff","lineColor":"#7f93c9","actorBkg":"#2f55d4","actorTextColor":"#ffffff","actorBorder":"#9db6ff","signalColor":"#5b6b94","signalTextColor":"#1b2340","noteBkgColor":"#fff4d6","noteTextColor":"#1b2340","fontFamily":"Segoe UI, Helvetica, Arial, sans-serif","fontSize":"16px"}}}%%
 sequenceDiagram
     actor Tú
     participant CC as 🤖 Claude Code
-    participant W as 🌐 Navegador (Playwright)
-    participant V as ▲ Vercel / 📄 .env.produccion
+    participant W as 🌐 Navegador
+    participant V as 🔐 Vercel / .env.produccion
     Tú->>CC: «Instala la app»
-    CC->>CC: npm ci · base local · datos de prueba
-    CC->>W: Abre Supabase, Vercel, Resend, GHL
+    CC->>CC: Instala, crea la base local y los datos de prueba
+    CC->>W: Abre Supabase, Vercel, Resend y GHL
     W-->>Tú: Inicias sesión tú
-    CC->>W: Escribe el NOMBRE de cada variable
-    Tú->>V: Pegas el VALOR (Claude no lo ve)
+    CC->>W: Escribe el NOMBRE de cada clave
+    Tú->>V: Pegas el VALOR
+    Note over CC,V: Claude nunca ve tus claves
     CC->>CC: Publica y comprueba que funciona
-    CC-->>Tú: ✅ Captura de tu app en internet
+    CC-->>Tú: ✅ Tu app en internet
 ```
 
 ### 1️⃣ Instala lo necesario
