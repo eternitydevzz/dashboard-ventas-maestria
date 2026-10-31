@@ -1,0 +1,11 @@
+# Saltos de línea iguales en Windows y en Mac (LF), para que los scripts, las migraciones y los tests no cambien
+* text=auto eol=lf
+
+# Binarios: nunca se tocan
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.ico binary
+*.webp binary
+*.woff binary
+*.woff2 binary

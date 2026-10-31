@@ -1,0 +1,484 @@
+"use server";
+
+import { ErrorUsuario, seguro } from "@/lib/resultado";
+import { revalidatePath } from "next/cache";
+import { olvidarTodo } from "@/lib/memoria";
+import { exigir, exigirCambiarComisionRol, puedeAdmin, puedeCrearProyectos } from "@/lib/auth";
+import { tramosDe, tramosValidos } from "@/lib/comisiones";
+import { preguntasValidas } from "@/lib/reportes";
+import { db, equipo, escribir } from "@/lib/datos";
+import { cifrar, descifrar } from "@/lib/cifrado";
+import { reglasValidas } from "@/lib/entrada";
+import { SECCIONES_TODAS, NUNCA, ROLES_PERMISO, seccionesPermitidas } from "@/lib/permisos";
+import type { RolPermiso } from "@/lib/permisos-constantes";
+import { ajustesValidos, type AjustesCalendario } from "@/lib/disponibilidad";
+import type { Rol } from "@/lib/tipos";
+import { mandarEnlace } from "@/lib/acceso";
+
+const ROLES: Rol[] = ["ceo", "director", "closer", "caller"];
+type Res = { ok?: string; error?: string } | null;
+// también borra la memoria compartida (lib/memoria.ts), para que lo guardado se vea al momento
+const refrescar = () => {
+  olvidarTodo();
+  revalidatePath("/", "layout");
+};
+const texto = (fd: FormData, k: string) => String(fd.get(k) ?? "").trim();
+
+// ---------- Equipo ----------
+export async function crearUsuario(_prev: Res, fd: FormData): Promise<Res> {
+  // Arreglo 30: mismo envoltorio que el resto (lo inesperado no enseña detalles internos)
+  return seguro(async () => {
+    const { perfil, proyecto } = await exigir(puedeAdmin);
+    const email = texto(fd, "email").toLowerCase();
+    const nombre = texto(fd, "nombre");
+    const rol = texto(fd, "rol") as Rol;
+    const password = String(fd.get("password") ?? "");
+    if (!nombre || !email) return { error: "Nombre y email son obligatorios." };
+    if (!ROLES.includes(rol)) return { error: "Rol no válido." };
+    if (rol === "ceo" && perfil.rol !== "ceo") return { error: "Solo el CEO puede crear otro CEO." };
+    if (password.length < 8) return { error: "La contraseña temporal necesita al menos 8 caracteres." };
+
+    const { data, error } = await db().auth.admin.createUser({ email, password, email_confirm: true });
+    if (error) return { error: error.message.includes("already") ? "Ya existe un usuario con ese email." : error.message };
+    const { error: e2 } = await db().from("perfiles").insert({ id: data.user.id, nombre, email, rol });
+    if (e2) {
+      await db().auth.admin.deleteUser(data.user.id);
+      return { error: e2.message };
+    }
+    const { count } = await db().from("miembros_proyecto").select("perfil_id", { count: "exact", head: true }).eq("proyecto_id", proyecto.id);
+    await escribir(db().from("miembros_proyecto").insert({ proyecto_id: proyecto.id, perfil_id: data.user.id, orden: count ?? 0 }), "miembros_proyecto");
+    refrescar();
+    return { ok: `Usuario creado. Pásale su email y la contraseña temporal; la primera vez verá el onboarding.` };
+  });
+}
+
+export async function actualizarMiembro(perfilId: string, cambios: { rol?: Rol; activo?: boolean; admin_activo?: boolean }) {
+  return seguro(async () => {
+    const { perfil, proyecto } = await exigir(puedeAdmin);
+    const { data: miembro } = await db().from("miembros_proyecto").select("perfil_id").eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId).maybeSingle();
+    if (!miembro) throw new ErrorUsuario("Esa persona no está en este proyecto.");
+    const { data: objetivo } = await db().from("perfiles").select("rol").eq("id", perfilId).single();
+    if (perfilId === perfil.id) throw new ErrorUsuario("No puedes cambiar tu propio rol o acceso.");
+    if (perfil.rol !== "ceo" && (objetivo?.rol === "ceo" || cambios.rol === "ceo")) throw new ErrorUsuario("Solo el CEO puede tocar a otro CEO.");
+    if (cambios.admin_activo !== undefined && perfil.rol !== "ceo") throw new ErrorUsuario("Solo el CEO da acceso de administración a los directores.");
+    // Arreglo 24: el perfil es uno para toda la app, así que cambiar el rol o
+    // desactivar a alguien afecta a todos sus proyectos → solo el CEO. El director puede quitarlo de su proyecto.
+    if ((cambios.rol !== undefined || cambios.activo !== undefined) && perfil.rol !== "ceo") throw new ErrorUsuario("Solo el CEO cambia el rol o desactiva a alguien (afecta a todos sus proyectos). Puedes quitarlo de este proyecto.");
+    if (cambios.rol && !ROLES.includes(cambios.rol)) throw new ErrorUsuario("Rol no válido.");
+    await escribir(db().from("perfiles").update(cambios).eq("id", perfilId), "perfiles");
+    refrescar();
+  });
+}
+
+export async function cambiarPassword(perfilId: string, password: string) {
+  return seguro(async () => {
+    const { perfil, proyecto } = await exigir(puedeAdmin);
+    if (password.length < 8) throw new ErrorUsuario("Mínimo 8 caracteres.");
+    const { data: miembro } = await db().from("miembros_proyecto").select("perfil_id").eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId).maybeSingle();
+    if (!miembro) throw new ErrorUsuario("Esa persona no está en este proyecto.");
+    const { data: objetivo } = await db().from("perfiles").select("rol").eq("id", perfilId).single();
+    if (perfil.rol !== "ceo" && objetivo?.rol === "ceo") throw new ErrorUsuario("Solo el CEO puede tocar a otro CEO.");
+    const { error } = await db().auth.admin.updateUserById(perfilId, { password });
+    if (error) throw new ErrorUsuario(error.message);
+  });
+}
+
+// Bloque 6: un administrador manda a alguien del proyecto un enlace para entrar sin
+// contraseña. La app genera el enlace (Supabase) y lo envía ella misma con Resend; dura 24 h (ajuste de Supabase).
+export async function enviarEnlaceMagico(perfilId: string) {
+  return seguro(async () => {
+    const { perfil, proyecto } = await exigir(puedeAdmin);
+    const { data: miembro } = await db().from("miembros_proyecto").select("perfil_id").eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId).maybeSingle();
+    if (!miembro) throw new ErrorUsuario("Esa persona no está en este proyecto.");
+    const { data: objetivo } = await db().from("perfiles").select("nombre, email, rol, activo").eq("id", perfilId).single();
+    if (!objetivo?.activo) throw new ErrorUsuario("Esa persona está desactivada.");
+    if (perfil.rol !== "ceo" && objetivo.rol === "ceo") throw new ErrorUsuario("Solo el CEO puede tocar a otro CEO.");
+    const r = await mandarEnlace(objetivo, "ficha", proyecto.nombre);
+    if (!r.enviado) throw new ErrorUsuario(`No se pudo enviar el email (${r.motivo}).`);
+  });
+}
+
+// Fase 1: mandar el acceso por email a varias personas del proyecto a la vez. Cada una
+// recibe un enlace para entrar (24 h, un solo uso) y crea su contraseña al entrar. Solo administradores; a un CEO
+// solo lo puede elegir otro CEO. Se manda uno a uno y se dice a quién llegó y a quién no.
+export async function enviarAccesos(perfilIds: string[]) {
+  return seguro(async () => {
+    const { perfil, proyecto } = await exigir(puedeAdmin);
+    const ids = [...new Set(perfilIds)].filter((x) => typeof x === "string" && x);
+    if (!ids.length) throw new ErrorUsuario("Elige al menos una persona.");
+    if (ids.length > 60) throw new ErrorUsuario("Como mucho 60 personas a la vez.");
+    const { data: miembros } = await db().from("miembros_proyecto").select("perfil_id").eq("proyecto_id", proyecto.id).in("perfil_id", ids);
+    const delProyecto = new Set((miembros ?? []).map((m) => m.perfil_id as string));
+    const { data: personas } = await db().from("perfiles").select("id, nombre, email, rol, activo").in("id", ids);
+    const enviados: string[] = [];
+    const fallos: { nombre: string; motivo: string }[] = [];
+    for (const p of personas ?? []) {
+      if (!delProyecto.has(p.id)) fallos.push({ nombre: p.nombre, motivo: "no está en este proyecto" });
+      else if (!p.activo) fallos.push({ nombre: p.nombre, motivo: "está desactivado" });
+      else if (p.rol === "ceo" && perfil.rol !== "ceo") fallos.push({ nombre: p.nombre, motivo: "solo el CEO puede mandárselo a otro CEO" });
+      else {
+        const r = await mandarEnlace(p, "bienvenida", proyecto.nombre);
+        if (r.enviado) enviados.push(p.nombre);
+        else fallos.push({ nombre: p.nombre, motivo: r.motivo });
+      }
+    }
+    return { enviados, fallos };
+  });
+}
+
+// ---------- Reparto automático con % (bloque 2 de 1.0) ----------
+// Encendido: los % de los callers tienen que sumar 100. Apagado: todo al 0 % o que sumen 100 (se guardan para luego).
+// Al cambiar los %, la cuenta de cada caller vuelve a cero (el reparto empieza de nuevo con los % nuevos).
+export async function guardarReparto(r: { auto: boolean; soloHorario: boolean; pcts: Record<string, number> }) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const callers = (await equipo(proyecto.id)).filter((p) => p.rol === "caller");
+    const pcts = new Map<string, number>();
+    for (const c of callers) {
+      const v = Number(r.pcts[c.id] ?? 0);
+      if (!Number.isFinite(v) || v < 0 || v > 100) throw new ErrorUsuario(`El % de ${c.nombre} tiene que ir de 0 a 100.`);
+      pcts.set(c.id, Math.round(v * 100) / 100);
+    }
+    const suma = Math.round([...pcts.values()].reduce((a, b) => a + b, 0) * 100) / 100;
+    if (r.auto && suma !== 100) throw new ErrorUsuario(`Los % suman ${suma}; para encender el reparto tienen que sumar 100.`);
+    if (!r.auto && suma !== 0 && suma !== 100) throw new ErrorUsuario(`Los % suman ${suma}; tienen que sumar 100 (o estar todos a 0).`);
+    const { data: antes } = await db().from("miembros_proyecto").select("perfil_id, reparto_pct").eq("proyecto_id", proyecto.id).in("perfil_id", callers.map((c) => c.id));
+    const cambian = (antes ?? []).some((a) => Number(a.reparto_pct) !== pcts.get(a.perfil_id));
+    for (const [id, v] of pcts) {
+      await escribir(db().from("miembros_proyecto").update({ reparto_pct: v, ...(cambian ? { reparto_cuenta: 0 } : {}) }).eq("proyecto_id", proyecto.id).eq("perfil_id", id), "miembros_proyecto");
+    }
+    await escribir(db().from("proyectos").update({ reparto_auto: r.auto, reparto_solo_horario: r.soloHorario }).eq("id", proyecto.id), "proyectos");
+    refrescar();
+  });
+}
+
+// ---------- Tramos de comisión (bloque 4 de 1.0) ----------
+// Los de callers o los de closers, en la moneda del proyecto. Mismas reglas que las comisiones por rol: solo el CEO o
+// un director (con Administración), y el director no los de su propio rol (aquí no aplica: son de callers y closers).
+export async function guardarTramos(rol: "caller" | "closer", tramos: { desde: number; pct: number }[]) {
+  return seguro(async () => {
+    const { perfil, proyecto } = await exigir(puedeAdmin);
+    if (rol !== "caller" && rol !== "closer") throw new ErrorUsuario("Los tramos son para callers y closers.");
+    exigirCambiarComisionRol(perfil, rol);
+    const t = tramosValidos(tramos);
+    if (!t) throw new ErrorUsuario("Revisa los tramos: el primero empieza en 0, cada uno en un importe distinto, y el % va de 0 a 100.");
+    const actuales = tramosDe(proyecto.tramos_comision);
+    await escribir(db().from("proyectos").update({ tramos_comision: { ...actuales, [rol]: t } }).eq("id", proyecto.id), "proyectos");
+    refrescar();
+  });
+}
+
+// ---------- Preguntas del reporte de fin de día (bloque 7 de 1.0) ----------
+// lista null = volver a las de siempre. Los reportes ya enviados se quedan con las suyas.
+export async function guardarPreguntasReporte(rol: "caller" | "closer", lista: unknown[] | null) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    if (rol !== "caller" && rol !== "closer") throw new ErrorUsuario("Rol no válido.");
+    const actuales = (proyecto.preguntas_reporte && typeof proyecto.preguntas_reporte === "object" ? proyecto.preguntas_reporte : {}) as Record<string, unknown>;
+    let nuevas: Record<string, unknown>;
+    if (lista === null) {
+      nuevas = Object.fromEntries(Object.entries(actuales).filter(([k]) => k !== rol));
+    } else {
+      const r = preguntasValidas(rol, lista);
+      if ("error" in r) throw new ErrorUsuario(r.error);
+      nuevas = { ...actuales, [rol]: r.ok };
+    }
+    await escribir(db().from("proyectos").update({ preguntas_reporte: Object.keys(nuevas).length ? nuevas : null }).eq("id", proyecto.id), "proyectos");
+    refrescar();
+  });
+}
+
+// ---------- Proyecto ----------
+// 4.4: el link del calendario de GHL que el caller manda al lead al pulsar «Link enviado»
+export async function guardarLinkAgenda(link: string) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const limpio = link.trim();
+    if (limpio) {
+      let ok = false;
+      try {
+        ok = new URL(limpio).protocol === "https:";
+      } catch {
+        ok = false;
+      }
+      if (!ok) throw new ErrorUsuario("El link de agenda tiene que empezar por https://");
+    }
+    await escribir(db().from("proyectos").update({ link_agenda: limpio || null }).eq("id", proyecto.id), "proyectos");
+    refrescar();
+  });
+}
+
+export async function guardarProyecto(_prev: Res, fd: FormData): Promise<Res> {
+  // Arreglo 30: mismo envoltorio que el resto (lo inesperado no enseña detalles internos)
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const aviso = texto(fd, "aviso_webhook_url");
+    if (aviso) {
+      try {
+        if (new URL(aviso).protocol !== "https:") return { error: "El webhook de avisos tiene que empezar por https://" };
+      } catch {
+        return { error: "El webhook de avisos no es un enlace válido." };
+      }
+    }
+    await escribir(db().from("proyectos").update({ aviso_webhook_url: aviso || null }).eq("id", proyecto.id), "proyectos");
+    refrescar();
+    return { ok: "Guardado." };
+  });
+}
+
+export async function crearProyecto(_prev: Res, fd: FormData): Promise<Res> {
+  // Arreglo 30: mismo envoltorio que el resto (lo inesperado no enseña detalles internos)
+  return seguro(async () => {
+    const { perfil } = await exigir(puedeCrearProyectos);
+    const nombre = texto(fd, "nombre");
+    const region = texto(fd, "region");
+    if (!nombre) return { error: "Pon un nombre." };
+    const config = region === "es" ? { moneda: "EUR", zona_horaria: "Europe/Madrid" } : { moneda: "USD", zona_horaria: "America/New_York" };
+    const color = /^#[0-9a-f]{6}$/i.test(texto(fd, "color")) ? texto(fd, "color") : "#2f55d4";
+    const { data, error } = await db().from("proyectos").insert({ nombre, color, ...config }).select().single();
+    if (error) return { error: error.code === "23505" ? "Ya existe un proyecto con ese nombre." : error.message };
+    await escribir(db().from("miembros_proyecto").insert({ proyecto_id: data.id, perfil_id: perfil.id }), "miembros_proyecto");
+    const { data: pipe } = await db().from("pipelines").insert({ proyecto_id: data.id, nombre: "Principal", orden: 0 }).select().single();
+    if (pipe)
+      await escribir(db().from("etapas").insert(
+        ["Nuevos", "Agendados", "En seguimiento", "Cerrados", "Descartados"].map((n, i) => ({ pipeline_id: pipe.id, nombre: n, orden: i, color: ["#64748b", "#2f55d4", "#d97706", "#16a34a", "#dc2626"][i] }))
+      ), "etapas");
+    refrescar();
+    return { ok: `Proyecto «${nombre}» creado (${config.moneda}, ${config.zona_horaria}). Cámbiate a él desde el selector de proyecto.` };
+  });
+}
+
+export async function regenerarSecreto() {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const nuevo = Array.from(crypto.getRandomValues(new Uint8Array(18)), (b) => b.toString(16).padStart(2, "0")).join("");
+    await escribir(db().from("proyectos").update({ webhook_secreto: nuevo }).eq("id", proyecto.id), "proyectos");
+    refrescar();
+  });
+}
+
+// ---------- Personas en varios proyectos ----------
+// Solo el CEO ve a la gente de todos los proyectos, así que solo él añade a alguien que ya existe.
+export async function anadirAlProyecto(perfilId: string) {
+  return seguro(async () => {
+    const { proyecto } = await exigir((p) => p.rol === "ceo");
+    const { data: persona } = await db().from("perfiles").select("id").eq("id", perfilId).maybeSingle();
+    if (!persona) throw new ErrorUsuario("Esa persona no existe.");
+    const { count } = await db().from("miembros_proyecto").select("perfil_id", { count: "exact", head: true }).eq("proyecto_id", proyecto.id);
+    const { error } = await db().from("miembros_proyecto").insert({ proyecto_id: proyecto.id, perfil_id: perfilId, orden: count ?? 0 });
+    if (error) throw new ErrorUsuario(error.code === "23505" ? "Ya está en este proyecto." : error.message);
+    refrescar();
+  });
+}
+
+// Quita a la persona de este proyecto (no borra su usuario ni sus datos).
+export async function quitarDelProyecto(perfilId: string) {
+  return seguro(async () => {
+    const { perfil, proyecto } = await exigir(puedeAdmin);
+    if (perfilId === perfil.id) throw new ErrorUsuario("No puedes quitarte a ti mismo.");
+    const { data: objetivo } = await db().from("perfiles").select("rol").eq("id", perfilId).maybeSingle();
+    if (!objetivo) throw new ErrorUsuario("Esa persona no existe.");
+    if (perfil.rol !== "ceo" && objetivo.rol === "ceo") throw new ErrorUsuario("Solo el CEO puede tocar a otro CEO.");
+    await escribir(db().from("miembros_proyecto").delete().eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId), "miembros_proyecto");
+    // Arreglo 23: sus leads de este proyecto quedan sin asignar, para repartirlos
+    const [{ data: comoCaller }, { data: comoCloser }] = await Promise.all([
+      escribir(db().from("leads").update({ caller_id: null }).eq("proyecto_id", proyecto.id).eq("caller_id", perfilId).select("id"), "leads"),
+      escribir(db().from("leads").update({ closer_id: null }).eq("proyecto_id", proyecto.id).eq("closer_id", perfilId).select("id"), "leads"),
+    ]);
+    refrescar();
+    return { sinAsignar: new Set([...(comoCaller ?? []), ...(comoCloser ?? [])].map((l) => l.id)).size };
+  });
+}
+
+// ---------- Entradas (una dirección por landing) ----------
+// Comprueba que el pipeline y la columna son de este proyecto (y que la columna es de ese pipeline).
+async function destinoValido(proyectoId: string, pipelineId: string | null, etapaId: string | null) {
+  if (!pipelineId) return { pipeline_id: null, etapa_id: null };
+  const { data: p } = await db().from("pipelines").select("id").eq("id", pipelineId).eq("proyecto_id", proyectoId).eq("tipo", "normal").maybeSingle();
+  if (!p) throw new ErrorUsuario("Ese pipeline no es de este proyecto.");
+  if (etapaId) {
+    const { data: e } = await db().from("etapas").select("id").eq("id", etapaId).eq("pipeline_id", pipelineId).maybeSingle();
+    if (!e) throw new ErrorUsuario("Esa columna no es de ese pipeline.");
+  }
+  return { pipeline_id: pipelineId, etapa_id: etapaId || null };
+}
+
+async function entradaDelProyecto(id: string, proyectoId: string) {
+  const { data } = await db().from("entradas").select("id").eq("id", id).eq("proyecto_id", proyectoId).maybeSingle();
+  if (!data) throw new ErrorUsuario("Entrada no encontrada.");
+}
+
+export async function crearEntrada(_prev: Res, fd: FormData): Promise<Res> {
+  const r = await seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const nombre = texto(fd, "nombre");
+    if (!nombre) throw new ErrorUsuario("Pon un nombre (por ejemplo, el de la landing).");
+    const destino = await destinoValido(proyecto.id, texto(fd, "pipeline_id") || null, texto(fd, "etapa_id") || null);
+    const { error } = await db().from("entradas").insert({ proyecto_id: proyecto.id, nombre, ...destino });
+    if (error) throw new ErrorUsuario(error.message);
+    refrescar();
+    return { ok: "Entrada creada. Copia su dirección y pégala en la landing." };
+  });
+  return r;
+}
+
+export async function guardarEntrada(id: string, cambios: { nombre: string; pipeline_id: string | null; etapa_id: string | null; reglas: unknown; activa: boolean }) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    await entradaDelProyecto(id, proyecto.id);
+    if (!cambios.nombre.trim()) throw new ErrorUsuario("Pon un nombre.");
+    const destino = await destinoValido(proyecto.id, cambios.pipeline_id, cambios.etapa_id);
+    const reglas = reglasValidas(cambios.reglas);
+    for (const r of reglas) if (r.pipeline_id || r.etapa_id) await destinoValido(proyecto.id, r.pipeline_id ?? null, r.etapa_id ?? null);
+    await escribir(db().from("entradas").update({ nombre: cambios.nombre.trim(), ...destino, reglas, activa: cambios.activa }).eq("id", id), "entradas");
+    refrescar();
+  });
+}
+
+export async function nuevaDireccionEntrada(id: string) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    await entradaDelProyecto(id, proyecto.id);
+    const token = Array.from(crypto.getRandomValues(new Uint8Array(24)), (b) => b.toString(16).padStart(2, "0")).join("");
+    await escribir(db().from("entradas").update({ token }).eq("id", id), "entradas");
+    refrescar();
+  });
+}
+
+export async function borrarEntrada(id: string) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    await entradaDelProyecto(id, proyecto.id);
+    // Los envíos ya recibidos y sus leads se quedan; solo se borra la dirección
+    await escribir(db().from("entradas").delete().eq("id", id), "entradas");
+    refrescar();
+  });
+}
+
+// ---------- GHL por API: calendarios de los closers (V2-3) ----------
+// El token solo se escribe; la pantalla nunca lo vuelve a enseñar entero.
+export async function guardarConexionGhl(token: string, locationId: string) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const t = token.trim();
+    const loc = locationId.trim();
+    if (!loc) throw new ErrorUsuario("Pon el id de la subcuenta (Location ID) de GHL.");
+    if (t && t.length < 20) throw new ErrorUsuario("Ese token parece incompleto.");
+    await escribir(db().from("proyectos").update({ ghl_location_id: loc, ...(t ? { ghl_token: cifrar(t) } : {}) }).eq("id", proyecto.id), "proyectos");
+    refrescar();
+  });
+}
+
+export async function guardarCalendarioCloser(perfilId: string, calendarId: string, userId: string) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const { data } = await db().from("miembros_proyecto").select("perfil_id, perfiles!inner(rol)").eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId).eq("perfiles.rol", "closer").maybeSingle();
+    if (!data) throw new ErrorUsuario("Esa persona no es closer de este proyecto.");
+    await escribir(db().from("miembros_proyecto").update({ ghl_calendar_id: calendarId.trim() || null, ghl_user_id: userId.trim() || null }).eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId), "miembros_proyecto");
+    refrescar();
+  });
+}
+
+export async function probarConexionGhl() {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const { data: p } = await db().from("proyectos").select("ghl_token, ghl_location_id").eq("id", proyecto.id).single();
+    if (!p?.ghl_token || !p.ghl_location_id) throw new ErrorUsuario("Primero guarda el token y el id de la subcuenta.");
+    const { data: m } = await db().from("miembros_proyecto").select("ghl_calendar_id, ghl_user_id").eq("proyecto_id", proyecto.id).or("ghl_calendar_id.not.is.null,ghl_user_id.not.is.null").limit(1).maybeSingle();
+    if (!m) throw new ErrorUsuario("Pon el calendario de GHL de al menos un closer para poder probar.");
+    const { eventosGhl } = await import("@/lib/ghl");
+    try {
+      const ev = await eventosGhl({ token: descifrar(p.ghl_token, "el token de GHL"), locationId: p.ghl_location_id, calendarId: m.ghl_calendar_id, userId: m.ghl_user_id, desde: new Date(Date.now() - 7 * 86_400_000), hasta: new Date(Date.now() + 30 * 86_400_000) });
+      return { ok: `Conexión correcta: ${ev.length} citas encontradas en el calendario (últimos 7 días y próximos 30).` };
+    } catch (e) {
+      throw new ErrorUsuario(e instanceof Error ? e.message : "No se pudo conectar con GHL.");
+    }
+  });
+}
+
+// ---------- Permisos por sección (V2-8 y Paso H5) ----------
+// Paso H5: todas las secciones, por rol y por persona (manda la persona).
+// Los cambian el CEO y el director con Administración; el director nunca se da más a sí mismo
+// (ni su rol ni su ficha) ni da lo que él no tiene. Equipo y Finanzas, nunca a callers ni closers.
+async function quienCambiaPermisos() {
+  const sesion = await exigir(puedeAdmin);
+  const mias = await seccionesPermitidas(sesion.perfil, sesion.proyecto.id);
+  const comprobar = (rol: RolPermiso, seccion: string, permitido: boolean | null) => {
+    const s = SECCIONES_TODAS.find((x) => x.v === seccion);
+    if (!s) throw new ErrorUsuario("Sección no válida.");
+    if (permitido && NUNCA[rol].has(s.v)) throw new ErrorUsuario(`«${s.t}» no se puede dar a ${rol === "director" ? "directores" : `${rol}s`}.`);
+    if (permitido && sesion.perfil.rol !== "ceo" && !mias.has(s.v)) throw new ErrorUsuario(`No puedes dar «${s.t}»: tú no la tienes.`);
+    return s.v;
+  };
+  return { ...sesion, comprobar };
+}
+
+export async function guardarPermisoSeccion(rol: RolPermiso, seccion: string, permitido: boolean) {
+  return seguro(async () => {
+    const { perfil, proyecto, comprobar } = await quienCambiaPermisos();
+    if (!ROLES_PERMISO.includes(rol)) throw new ErrorUsuario("Rol no válido.");
+    if (perfil.rol !== "ceo" && rol === "director") throw new ErrorUsuario("Los permisos de los directores solo los cambia el CEO.");
+    const s = comprobar(rol, seccion, permitido);
+    const { error } = await db().from("permisos_seccion").upsert({ proyecto_id: proyecto.id, rol, seccion: s, permitido: !!permitido });
+    if (error) throw new ErrorUsuario(error.message);
+    refrescar();
+  });
+}
+
+// En la ficha de una persona: true / false, o null = «como su rol» (se borra su fila)
+export async function guardarPermisoPersona(perfilId: string, seccion: string, permitido: boolean | null) {
+  return seguro(async () => {
+    const { perfil, proyecto, comprobar } = await quienCambiaPermisos();
+    if (perfilId === perfil.id) throw new ErrorUsuario("Tus propios permisos te los cambia el CEO.");
+    const { data: m } = await db().from("miembros_proyecto").select("perfil_id, perfiles!inner(rol)").eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId).maybeSingle();
+    const rol = (m as unknown as { perfiles: { rol: string } } | null)?.perfiles.rol;
+    if (!m || !ROLES_PERMISO.includes(rol as RolPermiso)) throw new ErrorUsuario("Esa persona no es caller, closer ni director de este proyecto (el CEO lo tiene todo siempre).");
+    const s = comprobar(rol as RolPermiso, seccion, permitido);
+    const r =
+      permitido === null
+        ? await db().from("permisos_persona").delete().eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId).eq("seccion", s)
+        : await db().from("permisos_persona").upsert({ proyecto_id: proyecto.id, perfil_id: perfilId, seccion: s, permitido });
+    if (r.error) throw new ErrorUsuario(r.error.message);
+    refrescar();
+  });
+}
+
+// ---------- Ajustes de las llamadas de los closers (bloque 1 de 1.0) ----------
+// perfilId null = los del proyecto (valen para todos); con perfilId = los de ese closer (null = vuelve a los del proyecto).
+// Solo los pone un administrador.
+export async function guardarCalendario(perfilId: string | null, ajustes: { duracion: number; descanso: number; aviso: number; max_dia: number | null } | null) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    let valor: AjustesCalendario | null = null;
+    if (ajustes) {
+      valor = ajustesValidos(ajustes, { duracion: -1, descanso: -1, aviso: -1, max_dia: -1 });
+      if (valor.duracion < 0) throw new ErrorUsuario("La duración va de 5 a 480 minutos.");
+      if (valor.descanso < 0) throw new ErrorUsuario("El descanso va de 0 a 240 minutos.");
+      if (valor.aviso < 0) throw new ErrorUsuario("El aviso mínimo va de 0 a 30 días.");
+      if (valor.max_dia !== null && valor.max_dia < 0) throw new ErrorUsuario("El máximo de llamadas por día va de 1 a 100 (o vacío, sin máximo).");
+    }
+    if (!perfilId) {
+      if (!valor) throw new ErrorUsuario("Faltan los ajustes.");
+      await escribir(db().from("proyectos").update({ calendario: valor }).eq("id", proyecto.id), "proyectos");
+    } else {
+      const { data: quien } = await db().from("perfiles").select("rol").eq("id", perfilId).maybeSingle();
+      if (quien?.rol !== "closer") throw new ErrorUsuario("Estos ajustes son para closers.");
+      const { data, error } = await db().from("miembros_proyecto").update({ calendario: valor }).eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId).select("perfil_id");
+      if (error) throw new ErrorUsuario(error.message);
+      if (!data?.length) throw new ErrorUsuario("Esa persona no está en este proyecto.");
+    }
+    refrescar();
+  });
+}
+
+// Usuario de GHL de cada persona (para saber quién hizo cada llamada de GHL, V2-11)
+export async function guardarUsuarioGhl(perfilId: string, userId: string) {
+  return seguro(async () => {
+    const { proyecto } = await exigir(puedeAdmin);
+    const u = userId.trim();
+    if (u && !/^[A-Za-z0-9_-]{6,64}$/.test(u)) throw new ErrorUsuario("El id de usuario de GHL no parece válido.");
+    const { data } = await db().from("miembros_proyecto").update({ ghl_user_id: u || null }).eq("proyecto_id", proyecto.id).eq("perfil_id", perfilId).select("perfil_id");
+    if (!data?.length) throw new ErrorUsuario("Esa persona no está en este proyecto.");
+    refrescar();
+  });
+}

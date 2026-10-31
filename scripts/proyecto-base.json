@@ -1,0 +1,79 @@
+{
+  "_nota": "Configuración inicial del proyecto. La usan seed.mjs (local) y preparar-proyecto.mjs (producción). Cambia aquí el nombre, la moneda, los pipelines y los productos de tu negocio antes de ejecutarlos.",
+  "proyecto": {
+    "nombre": "Mi Proyecto",
+    "moneda": "USD",
+    "zona_horaria": "America/New_York",
+    "color": "#2f55d4"
+  },
+  "_pipelines": "«0. Agendas General» es donde llegan todas las citas (src/lib/canal.ts). «Cerrados» va en todos (cerrar soltando). «Callers» y «Closers» los crea la base sola al crear el proyecto.",
+  "colores": [
+    "#64748b",
+    "#2f55d4",
+    "#d97706",
+    "#7c3aed",
+    "#0891b2",
+    "#db2777",
+    "#16a34a",
+    "#dc2626"
+  ],
+  "pipelines": [
+    {
+      "nombre": "0. Agendas General",
+      "columnas": [
+        "Form",
+        "Agendan",
+        "Confirman",
+        "No confirman",
+        "No show",
+        "Cerrados",
+        "No cualifican",
+        "Seguimiento"
+      ]
+    },
+    {
+      "nombre": "1. Lead Magnet",
+      "columnas": [
+        "Nuevos",
+        "Agendados",
+        "En seguimiento",
+        "Cerrados",
+        "Descartados"
+      ]
+    },
+    {
+      "nombre": "2. Webinar",
+      "columnas": [
+        "Registrados",
+        "Asistieron",
+        "Cerrados"
+      ]
+    }
+  ],
+  "productos": [
+    {
+      "nombre": "Membresía",
+      "precio": 49,
+      "modo_pago": "mensual",
+      "cuenta_comision": false,
+      "vende_caller": true,
+      "orden": 0,
+      "descripcion": "Pago mensual sin fin"
+    },
+    {
+      "nombre": "Programa",
+      "precio": 997,
+      "vende_caller": false,
+      "orden": 1,
+      "descripcion": "Producto de ejemplo"
+    },
+    {
+      "nombre": "Programa VIP",
+      "precio": 2997,
+      "vende_caller": false,
+      "orden": 2,
+      "descripcion": "Producto de ejemplo"
+    }
+  ],
+  "_productos": "Productos de ejemplo: cambia nombres y precios por los tuyos. La Membresía se paga cada mes, sin fin."
+}
