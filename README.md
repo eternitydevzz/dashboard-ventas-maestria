@@ -154,7 +154,7 @@ La forma fácil: **hablando con Claude Code**. El repo trae un [`CLAUDE.md`](CLA
 ```mermaid
 %%{init: {"theme":"base","themeVariables":{"primaryColor":"#2f55d4","primaryTextColor":"#ffffff","primaryBorderColor":"#9db6ff","lineColor":"#7f93c9","actorBkg":"#2f55d4","actorTextColor":"#ffffff","actorBorder":"#9db6ff","signalColor":"#5b6b94","signalTextColor":"#1b2340","noteBkgColor":"#fff4d6","noteTextColor":"#1b2340","fontFamily":"Segoe UI, Helvetica, Arial, sans-serif","fontSize":"16px"}}}%%
 sequenceDiagram
-    actor Tú
+    participant Tú as 🙋 Tú
     participant CC as 🤖 Claude Code
     participant W as 🌐 Navegador
     participant V as 🔐 Vercel / .env.produccion
@@ -182,29 +182,12 @@ sequenceDiagram
 
 ### 2️⃣ Descarga el proyecto
 
-<table>
-<tr><th>🪟 Windows (PowerShell)</th><th>🍎 Mac (Terminal)</th></tr>
-<tr>
-<td>
-
-```powershell
-cd $HOME\Desktop
-git clone https://github.com/eternitydevzz/dashboard-ventas-maestria.git
-cd dashboard-ventas-maestria
-```
-
-</td>
-<td>
+En **PowerShell** (Windows) o en **Terminal** (Mac), los mismos comandos:
 
 ```bash
-cd ~/Desktop
 git clone https://github.com/eternitydevzz/dashboard-ventas-maestria.git
 cd dashboard-ventas-maestria
 ```
-
-</td>
-</tr>
-</table>
 
 ¿Sin Git? Botón verde **Code → Download ZIP**, descomprímelo y entra en la carpeta `dashboard-ventas-maestria-main`.
 
@@ -226,7 +209,10 @@ Pégalos en Claude Code, en este orden. Cada uno es una fase del [`CLAUDE.md`](C
 <summary><b>1 · 💻 Verla funcionando en mi ordenador</b> (10 minutos)</summary>
 
 ```text
-Lee el CLAUDE.md y haz la Fase 0 y la Fase 1: comprueba que tengo todo lo necesario en mi sistema, instala la app en mi ordenador con la base de datos local y los datos de prueba, arráncala y ábremela en el navegador ya dentro como CEO. Ve paso a paso y dime qué haces.
+Lee el CLAUDE.md y haz la Fase 0 y la Fase 1: comprueba que tengo todo lo
+necesario en mi sistema, instala la app en mi ordenador con la base de datos
+local y los datos de prueba, arráncala y ábremela en el navegador ya dentro
+como CEO. Ve paso a paso y dime qué haces.
 ```
 
 </details>
@@ -235,7 +221,9 @@ Lee el CLAUDE.md y haz la Fase 0 y la Fase 1: comprueba que tengo todo lo necesa
 <summary><b>2 · 🎨 Ponerle mi marca</b></summary>
 
 ```text
-Haz la Fase 2 del CLAUDE.md: ponle mi marca a la app. Pregúntame de una en una el nombre de mi empresa, mi logo, mi color, mis pipelines, mis productos y mis etiquetas de GoHighLevel. Cuando acabes, enséñame una captura con mi marca.
+Haz la Fase 2 del CLAUDE.md: ponle mi marca a la app. Pregúntame de una en una
+el nombre de mi empresa, mi logo, mi color, mis pipelines, mis productos y mis
+etiquetas de GoHighLevel. Cuando acabes, enséñame una captura con mi marca.
 ```
 
 </details>
@@ -244,7 +232,10 @@ Haz la Fase 2 del CLAUDE.md: ponle mi marca a la app. Pregúntame de una en una 
 <summary><b>3 · 🌍 Publicarla en internet</b></summary>
 
 ```text
-Haz la Fase 3 del CLAUDE.md: publica la app en internet con GitHub, Supabase, Vercel y Resend. Ábreme cada web con el navegador y espera a que inicie sesión yo. Nunca me pidas una clave por el chat: ábreme la página donde se copia y dime dónde pegarla.
+Haz la Fase 3 del CLAUDE.md: publica la app en internet con GitHub, Supabase,
+Vercel y Resend. Ábreme cada web con el navegador y espera a que inicie sesión
+yo. Nunca me pidas una clave por el chat: ábreme la página donde se copia y
+dime dónde pegarla.
 ```
 
 </details>
@@ -253,7 +244,10 @@ Haz la Fase 3 del CLAUDE.md: publica la app en internet con GitHub, Supabase, Ve
 <summary><b>4 · 🟢 Conectar GoHighLevel</b></summary>
 
 ```text
-Haz la Fase 4 del CLAUDE.md: conecta mi cuenta de GoHighLevel. Guíame para crear el token, pegarlo en la app, elegir mis calendarios y activar la lectura automática. Al final, comprueba con una reserva de prueba que la cita llega a la app.
+Haz la Fase 4 del CLAUDE.md: conecta mi cuenta de GoHighLevel. Guíame para
+crear el token, pegarlo en la app, elegir mis calendarios y activar la lectura
+automática. Al final, comprueba con una reserva de prueba que la cita llega a
+la app.
 ```
 
 </details>
@@ -262,7 +256,10 @@ Haz la Fase 4 del CLAUDE.md: conecta mi cuenta de GoHighLevel. Guíame para crea
 <summary><b>5 · 👥 Dar de alta a mi equipo</b></summary>
 
 ```text
-Ayúdame a crear los usuarios de mi equipo: hazme las preguntas para el CSV (nombre, email, rol y proyecto de cada persona), créalo y ejecuta scripts/crear-usuarios.mjs primero en simulación y luego de verdad, como dice la Fase 3 del CLAUDE.md. No leas las contraseñas generadas.
+Ayúdame a crear los usuarios de mi equipo: hazme las preguntas para el CSV
+(nombre, email, rol y proyecto de cada persona), créalo y ejecuta
+scripts/crear-usuarios.mjs primero en simulación y luego de verdad, como dice
+la Fase 3 del CLAUDE.md. No leas las contraseñas generadas.
 ```
 
 </details>
@@ -271,7 +268,9 @@ Ayúdame a crear los usuarios de mi equipo: hazme las preguntas para el CSV (nom
 <summary><b>6 · 🧯 Algo no funciona</b></summary>
 
 ```text
-Algo no funciona en la app: [describe aquí qué ves]. Mira la tabla «Si algo falla» de docs/GUIA-PUBLICAR.md, revisa los registros y dime qué pasa antes de cambiar nada.
+Algo no funciona en la app: [describe aquí qué ves]. Mira la tabla «Si algo
+falla» de docs/GUIA-PUBLICAR.md, revisa los registros y dime qué pasa antes de
+cambiar nada.
 ```
 
 </details>
@@ -280,7 +279,9 @@ Algo no funciona en la app: [describe aquí qué ves]. Mira la tabla «Si algo f
 <summary><b>7 · 🎓 Explícame cómo funciona</b></summary>
 
 ```text
-Explícame con palabras sencillas cómo funciona [el reparto de leads / las comisiones por tramos / la lectura de GHL / los permisos]: qué archivos intervienen y qué puedo cambiar sin romper nada.
+Explícame con palabras sencillas cómo funciona [el reparto de leads / las
+comisiones por tramos / la lectura de GHL / los permisos]: qué archivos
+intervienen y qué puedo cambiar sin romper nada.
 ```
 
 </details>
